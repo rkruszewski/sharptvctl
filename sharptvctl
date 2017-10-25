@@ -1,0 +1,237 @@
+#!/usr/bin/env ruby
+#
+# A command line utility to control
+# Sharp televisions using serial port.
+#
+# Tested on:
+#   Sharp Aquos LC-60C8470U
+#   Sharp LC46D85U
+#
+###
+require 'thor'
+require 'serialport'
+
+PORT_STR = '/dev/ttyUSB0'.freeze
+
+SERIAL_PARAMS = { baud: 9600, data_bits: 8, stop_bits: 1, parity: SerialPort::NONE }.freeze
+
+READ_TIMEOUT = 1000
+
+# There are many more commands, I am choosing to define the commands
+# I would most likely use in a home automation implementation,
+# and the commands that also have greatest chance of cross-tv compatibilty.
+# I leave the addition of other commands as a learning exercise for the reader
+COMMANDS = {
+  power: {
+    prefix: 'POWR',
+    desc:   'Control TV Power',
+    valid_commands: {
+      off: {
+        desc: 'Turn the TV OFF.',
+        send: '0'
+      },
+      on: {
+        desc: 'Turn the TV ON.',
+        send: '1'
+      }
+    }
+  },
+  volume: {
+    prefix: 'VOLM',
+    desc:   'Set TV volume',
+    valid_commands: {
+      set: {
+        desc: 'Set the TV volume to value between 0-60',
+        send: 'ARG'
+      }
+    }
+  },
+  name:   {
+    prefix: 'TVNM',
+    desc:   'Get the TV name',
+    valid_commands: {
+      get: {
+        desc: 'Get the TV volume as it appears via IP interface',
+        send: '1'
+      }
+    }
+  },
+  model:  {
+    prefix: 'MNRD',
+    desc:   'Get the TV model',
+    valid_commands: {
+      get: {
+        desc: 'Get the TV Model name',
+        send: '1'
+      }
+    }
+  },
+  mute:   {
+    prefix: 'MUTE',
+    desc:   'Mute the TV.',
+    valid_commands: {
+      toggle: {
+        desc: 'Toggle the TV mute',
+        send: '0'
+      },
+      on: {
+        desc: 'Set TV mute to ON',
+        send: '1'
+      },
+      off: {
+        desc: 'Set TV mute to OFF',
+        send: '2'
+      }
+    }
+  },
+  input:  {
+    prefix: 'ITGD',
+    desc: 'Toggle the TV input',
+    valid_commands: {
+      toggle: {
+        desc: 'Toggle the TV input',
+        send: 'x'
+      }
+    }
+  }
+}.freeze
+
+def send_command(port_str, read_timeout, serial_params, command) # rubocop:disable Metrics/AbcSize
+  unless File.chardev?(port_str)
+    puts "\nError: port #{port_str} is not a valid character device.  Exiting.\n"
+    exit(1)
+  end
+
+  # I read somewhere to use separate objects for writers and readers in ruby.
+  sp_writer = SerialPort.new(port_str, serial_params)
+  sp_writer.read_timeout = read_timeout
+  sp_reader = SerialPort.new(port_str, serial_params)
+  sp_reader.read_timeout = read_timeout
+
+  # The TV I have tends to be flaky with accepting commands and returning
+  # data if another command is given immediately after power on. Also,
+  # I find it can be happen with the input toggle.
+  # For these edge cases I have included the retries to try to smooth out
+  # the experience.
+  begin
+    retries ||= 6
+    sp_writer.write(command.ljust(8) + "\r")
+    response = sp_reader.readline("\r")
+  rescue
+    if (retries -= 1) > 0
+      sleep(2)
+      retry
+    else
+      response = 'ERR'
+    end
+  end
+
+  puts response.chomp
+  exit(1) if response.chomp == 'ERR'
+end
+
+def echo_command(command)
+  puts "#{command.ljust(8)}\\r"
+end
+
+module Tvcontrol
+  # This class creates the 'power' subcommand for the app.
+  class Power < Thor
+    desc 'on', 'Sends the TV the ON command.'
+    def on
+      command = COMMANDS[:power][:prefix] + COMMANDS[:power][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+
+    desc 'off', 'Sends the TV the OFF command.'
+    def off
+      command = COMMANDS[:power][:prefix] + COMMANDS[:power][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+  end
+
+  # This class is for volume subcommands
+  class Volume < Thor
+    desc 'set', 'Set volume to number between 0-60'
+    def set(_arg)
+      if ARGV[-1].to_i.between?(0, 60)
+        command = COMMANDS[:volume][:prefix] + ARGV[-1]
+        send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+      else
+        puts "\nError: Volume value must be between 0 and 60.  Exiting.\n"
+        exit(1)
+      end
+    end
+  end
+
+  # This class is for name subcommands
+  class Name < Thor
+    desc 'get', COMMANDS[:name][:valid_commands][:get][:desc]
+    def get
+      command = COMMANDS[:name][:prefix] + COMMANDS[:name][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+  end
+
+  # This class is for model subcommands
+  class Model < Thor
+    desc 'get', COMMANDS[:model][:valid_commands][:get][:desc]
+    def get
+      command = COMMANDS[:model][:prefix] + COMMANDS[:model][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+  end
+
+  # This class is for mute subcommands
+  class Mute < Thor
+    desc 'on', COMMANDS[:mute][:valid_commands][:on][:desc]
+    def on
+      command = COMMANDS[:mute][:prefix] + COMMANDS[:mute][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+
+    desc 'off', COMMANDS[:mute][:valid_commands][:off][:desc]
+    def off
+      command = COMMANDS[:mute][:prefix] + COMMANDS[:mute][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+
+    desc 'toggle', COMMANDS[:mute][:valid_commands][:toggle][:desc]
+    def toggle
+      command = COMMANDS[:mute][:prefix] + COMMANDS[:mute][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+  end
+
+  # This class is for input toggle  subcommands
+  class Input < Thor
+    desc 'toggle', COMMANDS[:input][:valid_commands][:toggle][:desc]
+    def toggle
+      command = COMMANDS[:input][:prefix] + COMMANDS[:input][:valid_commands][__callee__.to_sym][:send]
+      send_command(PORT_STR, READ_TIMEOUT, SERIAL_PARAMS, command)
+    end
+  end
+
+  # This is the "main" class that can call the other sub commands
+  class Sharptv < Thor
+    desc 'power', COMMANDS[:power][:desc]
+    subcommand 'power', Power
+
+    desc 'volume', COMMANDS[:volume][:desc]
+    subcommand 'volume', Volume
+
+    desc 'name', COMMANDS[:name][:desc]
+    subcommand 'name', Name
+
+    desc 'model', COMMANDS[:model][:desc]
+    subcommand 'model', Model
+
+    desc 'mute', COMMANDS[:mute][:desc]
+    subcommand 'mute', Mute
+
+    desc 'input', COMMANDS[:input][:desc]
+    subcommand 'input', Input
+  end
+end
+
+Tvcontrol::Sharptv.start
